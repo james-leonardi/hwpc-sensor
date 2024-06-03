@@ -1,5 +1,6 @@
 #include <stdlib.h>
 #include <stdio.h>
+#include <string.h>
 #include <linux/perf_event.h>
 #include <linux/hw_breakpoint.h>
 #include <sys/syscall.h>
@@ -20,15 +21,14 @@ static Dwfl_Callbacks callbacks = {
 	.find_debuginfo = dwfl_standard_find_debuginfo
 };
 
-Dwfl *init_dwfl(const char *exe) {
+Dwfl *init_dwfl(pid_t pid) {
 	Dwfl *dwfl = dwfl_begin(&callbacks);
 	if (!dwfl) {
 		fprintf(stderr, "dwfl_begin error: %s\n", dwfl_errmsg(-1));
 		exit(EXIT_FAILURE);
 	}
 
-	// replace getpid() with process-to-monitor pid
-	if (dwfl_linux_proc_report(dwfl, getpid())) {
+	if (dwfl_linux_proc_report(dwfl, pid)) {
 		fprintf(stderr, "dwfl_linux_proc_report error: %s\n", dwfl_errmsg(-1));
 		dwfl_end(dwfl);
 		exit(EXIT_FAILURE);
@@ -103,12 +103,12 @@ void print_sample(struct sample *sample, Dwfl *dwfl) {
 	print_header(&sample->header);
 	printf("struct sample\n");
 	printf("\tnr: %lu\n", sample->nr);
-	for (int i = 0; i < sample->nr; i++) {
+	for (u64 i = 0; i < sample->nr; i++) {
 		uintptr_t ip = sample->ips[i]; // get ip
 		Dwfl_Module *mod = dwfl_addrmodule(dwfl, ip); // get module of this ip
 		const char *symbol = NULL; // instantiate symbol
 		if (mod) symbol = dwfl_module_addrname(mod, ip);
-		printf("\t\tips[%i]: 0x%lx %s\n", i, ip, symbol ? symbol : "unknown");
+		printf("\t\tips[%lu]: 0x%lx %s\n", i, ip, symbol ? symbol : "unknown");
 	}
 	printf("\n\n");
 }
@@ -116,12 +116,32 @@ void print_sample(struct sample *sample, Dwfl *dwfl) {
 int main(int argc, char** argv) {
 	unsigned int samp_freq = 1000;
 	unsigned int report_sleep = 1000000;
-	if (argc >= 2) {
-		samp_freq = atoi(argv[1]);
+	
+	if (argc < 2) {
+		fprintf(stderr, "Usage: %s <path-to-program>\n", *argv);
+		exit(EXIT_FAILURE);
 	}
-	if (argc >= 3) {
-		report_sleep = atoi(argv[2]);
+
+	// Fork
+	char *exe_path = argv[1];
+	pid_t pid = fork();
+	if (pid == -1) {
+		perror("fork");
+		exit(EXIT_FAILURE);
 	}
+	if (pid == 0) {
+		// Child process - start the specified executable
+		if (strstr(exe_path, ".py"))
+			execlp("python3", "python3", exe_path, (char*)NULL);
+		else
+			execlp(exe_path, exe_path, (char*)NULL);
+		perror("execlp");
+		exit(EXIT_FAILURE);
+	}
+
+	// Parent process - monitor the given pid
+	sleep(1);
+	fprintf(stderr, "Got child pid %i\n", pid);
 
 	// Create struct perf_event_attr
 	struct perf_event_attr attr = {0};
@@ -139,7 +159,7 @@ int main(int argc, char** argv) {
 	attr.disabled = 1;
 
 	// Invoke the perf recorder
-	int fd = syscall(SYS_perf_event_open, &attr, 0, -1, -1, 0);
+	int fd = syscall(SYS_perf_event_open, &attr, pid, -1, -1, 0);
 	if (fd == -1) {
 		perror("perf_event_open");
 		exit(EXIT_FAILURE);
@@ -161,7 +181,7 @@ int main(int argc, char** argv) {
 	struct perf_event_mmap_page *buffer_info = buffer;
 
 	// Init dwfl
-	Dwfl *dwfl = init_dwfl("/proc/self/exe");
+	Dwfl *dwfl = init_dwfl(pid);
 
 	// Continuously read samples and print using print_sample()
 	void *data_head = buffer + PAGE_SIZE;
