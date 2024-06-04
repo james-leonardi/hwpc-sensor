@@ -31,12 +31,9 @@
 
 #include <czmq.h>
 #include <errno.h>
-#include <linux/perf_event.h>
-#include <linux/hw_breakpoint.h>
-#include <sys/syscall.h>
 #include <sys/ioctl.h>
 #include <stdbool.h>
-#include <unistd.h>
+#include <sys/mman.h>
 
 #include "target.h"
 #include "hwinfo.h"
@@ -205,6 +202,7 @@ perf_events_group_setup_cpu(struct perf_context *ctx, struct perf_group_cpu_cont
     char *cpu_id_endp = NULL;
     long cpu;
     struct event_config *event = NULL;
+    unsigned int num_pages = 16;
 
     errno = 0;
     cpu = strtol(cpu_id, &cpu_id_endp, 0);
@@ -219,15 +217,42 @@ perf_events_group_setup_cpu(struct perf_context *ctx, struct perf_group_cpu_cont
 
     for (event = zlistx_first(group->events); event; event = zlistx_next(group->events)) {
         errno = 0;
-        perf_fd = perf_event_open(&event->attr, ctx->cgroup_fd, (int) cpu, group_fd, perf_flags);
-        if (perf_fd < 1) {
-            zsys_error("perf<%s>: failed opening perf event for group=%s cpu=%d event=%s errno=%d", ctx->target_name, group->name, (int) cpu, event->name, errno);
-            return -1;
-        }
 
-        /* the first event is the group leader */
-        if (group_fd == -1)
-            group_fd = perf_fd;
+        if (group_fd == -1) { /* Set up IP sampling for group leader */
+                struct perf_event_attr attr = event->attr;
+                if (attr.sample_type) {
+                        fprintf(stderr, "ERROR: OVERRIDING SAMPLE TYPE %d\n", attr.sample_type);
+                }
+                attr.sample_type = PERF_SAMPLE_CALLCHAIN;
+                attr.sample_period = 1;
+                attr.mmap = 1;
+
+                perf_fd = perf_event_open(&attr, ctx->cgroup_fd, (int) cpu, -1, perf_flags);
+                if (perf_fd < 1) {
+                    zsys_error("perf<%s>: failed opening perf event for group=%s cpu=%d event=%s errno=%d", ctx->target_name, group->name, (int) cpu, event->name, errno);
+                    return -1;
+                }
+
+                /* Create mmap page for storing IPs */
+                void *buffer = mmap(NULL, num_pages * getpagesize() + 1, PROT_READ|PROT_WRITE, MAP_SHARED, perf_fd, 0);
+                if (buffer == MAP_FAILED) {
+                        zsys_error("mmap<%s>: failed creating mmap buffer for group=%s cpu=%d event=%s errno=%d", ctx->target_name, group->name, (int) cpu, event->name, errno);
+                        return -1;
+                }
+
+                /* Save buffer in cpu ctx */
+                cpu_ctx->buffer_info = (struct perf_event_mmap_page *)buffer;
+                cpu_ctx->buffer = buffer + getpagesize();
+
+                group_fd = perf_fd;
+
+        } else { /* Start other events in group normally */
+                perf_fd = perf_event_open(&event->attr, ctx->cgroup_fd, (int) cpu, group_fd, perf_flags);
+                if (perf_fd < 1) {
+                    zsys_error("perf<%s>: failed opening perf event for group=%s cpu=%d event=%s errno=%d", ctx->target_name, group->name, (int) cpu, event->name, errno);
+                    return -1;
+                }
+        }
 
         zlistx_add_end(cpu_ctx->perf_fds, &perf_fd);
     }
