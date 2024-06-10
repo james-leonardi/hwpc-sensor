@@ -493,7 +493,7 @@ char *pack_ips(struct sample *sample) {
 
 	char *ptr = result;
 	for (unsigned long i = 0; i < sample->nr; i++)
-		ptr += snprintf(ptr, 19, "0x%lx;", sample->ips[i]);
+		ptr += sprintf(ptr, "0x%lx;", sample->ips[i]);
 
 	return result;
 }
