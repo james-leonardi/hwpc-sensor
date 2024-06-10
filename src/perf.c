@@ -93,6 +93,8 @@ perf_group_cpu_context_create(void)
     if (!ctx)
         return NULL;
 
+    ctx->buffer_info = NULL;
+    ctx->buffer = NULL;
     ctx->perf_fds = zlistx_new();
     zlistx_set_duplicator(ctx->perf_fds, (zlistx_duplicator_fn *) intptrdup);
     zlistx_set_destructor(ctx->perf_fds, (zlistx_destructor_fn *) perf_event_fd_destroy);
@@ -180,6 +182,7 @@ perf_context_create(struct perf_config *config, zsock_t *pipe, const char *targe
     ctx->cgroup_fd = -1; /* by default, system wide monitoring */
     ctx->groups_ctx = zhashx_new();
     zhashx_set_destructor(ctx->groups_ctx, (zhashx_destructor_fn *) perf_group_context_destroy);
+    ctx->dwfl = NULL;
 
     return ctx;
 }
@@ -230,6 +233,9 @@ perf_events_group_setup_cpu(struct perf_context *ctx, struct perf_group_cpu_cont
                 attr.sample_type = PERF_SAMPLE_CALLCHAIN;
                 attr.sample_period = 1;
                 attr.mmap = 1;
+		attr.cgroup = 1;
+		attr.exclude_kernel = 1;
+		attr.exclude_callchain_kernel = 1;
 
                 perf_fd = perf_event_open(&attr, ctx->cgroup_fd, (int) cpu, -1, perf_flags);
                 if (perf_fd < 1) {
@@ -245,7 +251,7 @@ perf_events_group_setup_cpu(struct perf_context *ctx, struct perf_group_cpu_cont
                 }
 
                 /* Save buffer in cpu ctx */
-                cpu_ctx->perf_event_mmap_page = buffer;
+                cpu_ctx->buffer_info = buffer;
                 cpu_ctx->buffer = (char *)buffer + getpagesize();
 
         } else { /* Start other events in group normally */
@@ -263,6 +269,32 @@ perf_events_group_setup_cpu(struct perf_context *ctx, struct perf_group_cpu_cont
     }
 
     return 0;
+}
+
+static Dwfl_Callbacks callbacks = {
+	.find_elf = dwfl_linux_proc_find_elf,
+	.find_debuginfo = dwfl_standard_find_debuginfo
+};
+
+Dwfl *init_dwfl(pid_t pid) {
+	Dwfl *dwfl = dwfl_begin(&callbacks);
+	if (!dwfl) {
+		fprintf(stderr, "dwfl_begin error: %s\n", dwfl_errmsg(-1));
+		return NULL;
+	}
+
+	if (dwfl_linux_proc_report(dwfl, pid)) {
+		fprintf(stderr, "dwfl_linux_proc_report error: %s\n", dwfl_errmsg(-1));
+		return NULL;
+	}
+
+	if (dwfl_report_end(dwfl, NULL, NULL) != 0) {
+		fprintf(stderr, "dwfl_report_end error: %s\n", dwfl_errmsg(-1));
+		dwfl_end(dwfl);
+		return NULL;
+	}
+
+	return dwfl;
 }
 
 static int
@@ -286,6 +318,9 @@ perf_events_groups_initialize(struct perf_context *ctx)
             zsys_error("perf<%s>: cannot open cgroup dir path=%s errno=%d", ctx->target_name, ctx->config->target->cgroup_path, errno);
             goto error;
         }
+
+	// need to get pid from cgroup...
+	//ctx->dwfl = dwfl_init(PID);
     }
 
     for (events_group = zhashx_first(ctx->config->events_groups); events_group; events_group = zhashx_next(ctx->config->events_groups)) {
@@ -424,6 +459,62 @@ compute_perf_multiplexing_ratio(struct perf_read_format *report)
     return (!report->time_enabled) ? 1.0 : (double) report->time_running / (double) report->time_enabled;
 }
 
+// TESTING
+struct sample {
+	struct perf_event_header header;
+	unsigned long nr;
+	unsigned long ips[];
+};
+
+void print_mmap_page(struct perf_event_mmap_page *header) {
+	printf("struct perf_event_mmap_page (%p)\n", (void*)header);
+	printf("\tversion: %u\n", header->version);
+	printf("\tcompat_version: %u\n", header->compat_version);
+	printf("\tlock: %u\n", header->lock);
+
+	printf("\tindex: %u\n", header->index);
+	printf("\toffset: %lli\n", header->offset);
+	printf("\ttime_enabled: %llu\n", header->time_enabled);
+	printf("\ttime_running: %llu\n", header->time_running);
+	printf("\tcapabilities: %llu\n", header->capabilities);
+	
+	printf("\tpmc_width: %hu\n", header->pmc_width);
+	printf("\ttime_shift: %hu\n", header->time_shift);
+	printf("\ttime_mult: %u\n", header->time_mult);
+	printf("\ttime_offset: %llu\n", header->time_offset);
+	
+	printf("\tdata_head: %llu\n", header->data_head);
+	printf("\tdata_tail: %llu\n", header->data_tail);
+	printf("\tdata_offset: %llu\n", header->data_offset);
+	printf("\tdata_size: %llu\n", header->data_size);
+
+	printf("\taux_head: %llu\n", header->aux_head);
+	printf("\taux_tail: %llu\n", header->aux_tail);
+	printf("\taux_offset: %llu\n", header->aux_offset);
+	printf("\taux_size: %llu\n", header->aux_size);
+	
+	printf("\n");
+}
+
+void print_header(struct perf_event_header *header) {
+	printf("struct perf_event_header\n");
+	printf("\ttype: %u\n", header->type);
+	printf("\tmisc: %hu\n", header->misc);
+	printf("\tsize: %hu\n", header->size);
+
+	printf("\n");
+}
+
+void print_sample(struct sample *sample) {
+	print_header(&sample->header);
+	printf("struct sample\n");
+	printf("\tnr: %lu\n", sample->nr);
+	for (unsigned long i = 0; i < sample->nr; i++) {
+		printf("\t\tips[%lu]: 0x%lx\n", i, sample->ips[i]);
+	}
+	printf("\n\n");
+}
+
 static int
 populate_payload(struct perf_context *ctx, struct payload *payload)
 {
@@ -492,6 +583,11 @@ populate_payload(struct perf_context *ctx, struct payload *payload)
                 for (event = zlistx_first(group_ctx->config->events), event_i = 0; event; event = zlistx_next(group_ctx->config->events), event_i++) {
                     zhashx_insert(cpu_data->events, event->name, &perf_read_buffer->values[event_i].value);
                 }
+
+		if (cpu_ctx->buffer_info) {
+			print_mmap_page(cpu_ctx->buffer_info);
+			print_sample(cpu_ctx->buffer);
+		}
 
                 zhashx_insert(pkg_data->cpus, cpu_id, cpu_data);
             }

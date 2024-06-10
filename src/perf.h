@@ -33,6 +33,9 @@
 #define PERF_H
 
 #include <czmq.h>
+#include <elfutils/libdwfl.h>
+#include <elfutils/libdw.h>
+#include <libelf.h>
 #include "hwinfo.h"
 #include "events.h"
 
@@ -52,9 +55,9 @@ struct perf_config
 struct perf_group_cpu_context
 {
     zlistx_t *perf_fds; /* int *fd */
-
+    
     /* For sampling instruction pointers */
-    void *perf_event_mmap_page;
+    void *buffer_info; /* -> struct perf_event_mmap_page */
     void *buffer;
 };
 
@@ -89,6 +92,7 @@ struct perf_context
     zsock_t *reporting;
     int cgroup_fd;
     zhashx_t *groups_ctx; /* char *group_name -> struct perf_group_context *group_ctx */
+    Dwfl *dwfl; /* For symbolizing instruction pointers of this cgroup */
 };
 
 /*
