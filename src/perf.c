@@ -222,7 +222,7 @@ perf_events_group_setup_cpu(struct perf_context *ctx, struct perf_group_cpu_cont
     for (event = zlistx_first(group->events); event; event = zlistx_next(group->events)) {
         errno = 0;
 
-        if (group_fd == -1) { /* Set up IP sampling for group leader */
+        if (group_fd == -1 && ctx->cgroup_fd > -1) { /* Set up IP sampling for group leader */
                 struct perf_event_attr attr = event->attr;
                 if (attr.sample_type) {
                         fprintf(stderr, "ERROR: OVERRIDING SAMPLE TYPE %lld\n", attr.sample_type);
@@ -233,7 +233,7 @@ perf_events_group_setup_cpu(struct perf_context *ctx, struct perf_group_cpu_cont
 
                 perf_fd = perf_event_open(&attr, ctx->cgroup_fd, (int) cpu, -1, perf_flags);
                 if (perf_fd < 1) {
-                    zsys_error("perf<%s>: failed opening perf event for group=%s cpu=%d event=%s errno=%d", ctx->target_name, group->name, (int) cpu, event->name, errno);
+                    zsys_error("perf<%s>: failed opening perf event for group=%s cpu=%d event=%s groupfd=%d errno=%d", ctx->target_name, group->name, (int) cpu, event->name, group_fd, errno);
                     return -1;
                 }
 
@@ -248,15 +248,16 @@ perf_events_group_setup_cpu(struct perf_context *ctx, struct perf_group_cpu_cont
                 cpu_ctx->perf_event_mmap_page = buffer;
                 cpu_ctx->buffer = (char *)buffer + getpagesize();
 
-                group_fd = perf_fd;
-
         } else { /* Start other events in group normally */
                 perf_fd = perf_event_open(&event->attr, ctx->cgroup_fd, (int) cpu, group_fd, perf_flags);
                 if (perf_fd < 1) {
-                    zsys_error("perf<%s>: failed opening perf event for group=%s cpu=%d event=%s errno=%d", ctx->target_name, group->name, (int) cpu, event->name, errno);
+                    zsys_error("perf<%s>: failed opening perf event for group=%s cpu=%d event=%s groupfd=%d errno=%d", ctx->target_name, group->name, (int) cpu, event->name, group_fd,  errno);
                     return -1;
                 }
         }
+	
+	if (group_fd == -1)
+		group_fd = perf_fd;
 
         zlistx_add_end(cpu_ctx->perf_fds, &perf_fd);
     }
