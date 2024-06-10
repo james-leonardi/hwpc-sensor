@@ -177,8 +177,13 @@ mongodb_store_report(struct storage_module *module, struct payload *payload)
 
                 for (event_value = zhashx_first(cpu_data->events); event_value; event_value = zhashx_next(cpu_data->events)) {
                     event_name = zhashx_cursor(cpu_data->events);
-                    BSON_APPEND_DOUBLE(&doc_cpu, event_name, *event_value);
-                }
+
+		    if (strcmp(event_name, "callchain") == 0)
+			    BSON_APPEND_UTF8(&doc_cpu, event_name, (char *) event_value);
+		    else
+			    BSON_APPEND_DOUBLE(&doc_cpu, event_name, *event_value);
+		    
+		}
 
                 bson_append_document_end(&doc_pkg, &doc_cpu);
             }

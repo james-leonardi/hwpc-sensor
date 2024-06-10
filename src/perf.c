@@ -182,7 +182,6 @@ perf_context_create(struct perf_config *config, zsock_t *pipe, const char *targe
     ctx->cgroup_fd = -1; /* by default, system wide monitoring */
     ctx->groups_ctx = zhashx_new();
     zhashx_set_destructor(ctx->groups_ctx, (zhashx_destructor_fn *) perf_group_context_destroy);
-    ctx->dwfl = NULL;
 
     return ctx;
 }
@@ -271,32 +270,6 @@ perf_events_group_setup_cpu(struct perf_context *ctx, struct perf_group_cpu_cont
     return 0;
 }
 
-static Dwfl_Callbacks callbacks = {
-	.find_elf = dwfl_linux_proc_find_elf,
-	.find_debuginfo = dwfl_standard_find_debuginfo
-};
-
-Dwfl *init_dwfl(pid_t pid) {
-	Dwfl *dwfl = dwfl_begin(&callbacks);
-	if (!dwfl) {
-		fprintf(stderr, "dwfl_begin error: %s\n", dwfl_errmsg(-1));
-		return NULL;
-	}
-
-	if (dwfl_linux_proc_report(dwfl, pid)) {
-		fprintf(stderr, "dwfl_linux_proc_report error: %s\n", dwfl_errmsg(-1));
-		return NULL;
-	}
-
-	if (dwfl_report_end(dwfl, NULL, NULL) != 0) {
-		fprintf(stderr, "dwfl_report_end error: %s\n", dwfl_errmsg(-1));
-		dwfl_end(dwfl);
-		return NULL;
-	}
-
-	return dwfl;
-}
-
 static int
 perf_events_groups_initialize(struct perf_context *ctx)
 {
@@ -318,9 +291,6 @@ perf_events_groups_initialize(struct perf_context *ctx)
             zsys_error("perf<%s>: cannot open cgroup dir path=%s errno=%d", ctx->target_name, ctx->config->target->cgroup_path, errno);
             goto error;
         }
-
-	// need to get pid from cgroup...
-	//ctx->dwfl = dwfl_init(PID);
     }
 
     for (events_group = zhashx_first(ctx->config->events_groups); events_group; events_group = zhashx_next(ctx->config->events_groups)) {
@@ -515,6 +485,19 @@ void print_sample(struct sample *sample) {
 	printf("\n\n");
 }
 
+char *pack_ips(struct sample *sample) {
+	// String length = nr * 19 [16 (length of hex string) + 2 (0x) + 1 (;)] + 1 (null terminator)
+	char *result = (char *)malloc(sample->nr * 19 + 1);
+	if (!result)
+		return NULL;
+
+	char *ptr = result;
+	for (unsigned long i = 0; i < sample->nr; i++)
+		ptr += snprintf(ptr, 19, "0x%lx;", sample->ips[i]);
+
+	return result;
+}
+
 static int
 populate_payload(struct perf_context *ctx, struct payload *payload)
 {
@@ -584,9 +567,12 @@ populate_payload(struct perf_context *ctx, struct payload *payload)
                     zhashx_insert(cpu_data->events, event->name, &perf_read_buffer->values[event_i].value);
                 }
 
-		if (cpu_ctx->buffer_info) {
-			print_mmap_page(cpu_ctx->buffer_info);
-			print_sample(cpu_ctx->buffer);
+		/* store callchain */
+		struct sample *sample = (struct sample *)cpu_ctx->buffer;
+		if (cpu_ctx->buffer_info && sample->nr) {
+			zhashx_set_duplicator(cpu_data->events, NULL); // Disable the uint64ptrdup duplicator
+			char *ips = pack_ips(cpu_ctx->buffer);
+			zhashx_insert(cpu_data->events, "callchain", ips);
 		}
 
                 zhashx_insert(pkg_data->cpus, cpu_id, cpu_data);
