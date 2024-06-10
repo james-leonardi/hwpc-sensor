@@ -31,8 +31,12 @@
 
 #include <czmq.h>
 #include <errno.h>
+#include <linux/perf_event.h>
+#include <linux/hw_breakpoint.h>
+#include <sys/syscall.h>
 #include <sys/ioctl.h>
 #include <stdbool.h>
+#include <unistd.h>
 #include <sys/mman.h>
 
 #include "target.h"
@@ -221,7 +225,7 @@ perf_events_group_setup_cpu(struct perf_context *ctx, struct perf_group_cpu_cont
         if (group_fd == -1) { /* Set up IP sampling for group leader */
                 struct perf_event_attr attr = event->attr;
                 if (attr.sample_type) {
-                        fprintf(stderr, "ERROR: OVERRIDING SAMPLE TYPE %d\n", attr.sample_type);
+                        fprintf(stderr, "ERROR: OVERRIDING SAMPLE TYPE %lld\n", attr.sample_type);
                 }
                 attr.sample_type = PERF_SAMPLE_CALLCHAIN;
                 attr.sample_period = 1;
@@ -241,8 +245,8 @@ perf_events_group_setup_cpu(struct perf_context *ctx, struct perf_group_cpu_cont
                 }
 
                 /* Save buffer in cpu ctx */
-                cpu_ctx->buffer_info = (struct perf_event_mmap_page *)buffer;
-                cpu_ctx->buffer = buffer + getpagesize();
+                cpu_ctx->perf_event_mmap_page = buffer;
+                cpu_ctx->buffer = (char *)buffer + getpagesize();
 
                 group_fd = perf_fd;
 

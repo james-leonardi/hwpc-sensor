@@ -33,10 +33,6 @@
 #define PERF_H
 
 #include <czmq.h>
-#include <linux/perf_event.h>
-#include <linux/hw_breakpoint.h>
-#include <sys/syscall.h>
-#include <unistd.h>
 #include "hwinfo.h"
 #include "events.h"
 
@@ -58,7 +54,7 @@ struct perf_group_cpu_context
     zlistx_t *perf_fds; /* int *fd */
 
     /* For sampling instruction pointers */
-    struct perf_event_mmap_page *buffer_info;
+    void *perf_event_mmap_page;
     void *buffer;
 };
 
