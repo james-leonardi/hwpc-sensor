@@ -9,6 +9,7 @@
 #include <errno.h>
 
 #define PAGE_SIZE 4096
+#define BUFFER_PAGES 8
 
 typedef unsigned long u64;
 
@@ -95,7 +96,7 @@ int main(int argc, char** argv) {
 	// Flags
 	attr.mmap = 1;
 	attr.freq = 1;
-	attr.ksymbol = 1;
+	attr.exclude_kernel = 1;
 	// Require an enable call to start recording
 	attr.disabled = 1;
 
@@ -107,7 +108,7 @@ int main(int argc, char** argv) {
 	}
 
 	// Set up memory map to collect results
-	void *buffer = mmap(NULL, 1+16*PAGE_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+	struct perf_event_mmap_page *buffer = mmap(NULL, (BUFFER_PAGES + 1) * PAGE_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
 	if (buffer == MAP_FAILED) {
 		perror("mmap");
 		close(fd);
@@ -118,26 +119,24 @@ int main(int argc, char** argv) {
 	ioctl(fd, PERF_EVENT_IOC_RESET, 0);
 	ioctl(fd, PERF_EVENT_IOC_ENABLE, 0);
 
-	// Save a pointer to the info struct
-	struct perf_event_mmap_page *buffer_info = buffer;
-
 	// Continuously read samples and print using print_sample()
-	void *data_head = buffer + PAGE_SIZE;
 	struct perf_event_header *hdr;
 	while (1) {
-		print_mmap_page(buffer_info);
-		print_sample(data_head);
+		print_mmap_page(buffer);
+		u64 head = buffer->data_head;
+		__sync_synchronize();
+		u64 tail = buffer->data_tail;
 
-		// Increment our read pointer by the amount of bytes read.
-		hdr = data_head;
-		data_head += hdr->size;
-		// Increment data_tail by the amount of bytes read.
-		buffer_info->data_tail += hdr->size;
+		while (tail < head) {
+			hdr = (struct perf_event_header *)((char *)buffer + PAGE_SIZE + (tail % (BUFFER_PAGES * PAGE_SIZE)));
+			print_sample((struct sample *)hdr);
+			tail += hdr->size;
+		}
+
+		buffer->data_tail = tail;
 
 		// Sleep for 1 sec
 		usleep(report_sleep);
-
-		// This does not account for wrapping yet...
 	}
 }
 
