@@ -93,7 +93,6 @@ perf_group_cpu_context_create(void)
     if (!ctx)
         return NULL;
 
-    ctx->buffer_info = NULL;
     ctx->buffer = NULL;
     ctx->perf_fds = zlistx_new();
     zlistx_set_duplicator(ctx->perf_fds, (zlistx_duplicator_fn *) intptrdup);
@@ -208,7 +207,7 @@ perf_events_group_setup_cpu(struct perf_context *ctx, struct perf_group_cpu_cont
     char *cpu_id_endp = NULL;
     long cpu;
     struct event_config *event = NULL;
-    unsigned int num_pages = 16;
+    unsigned int num_pages = 32;
 
     errno = 0;
     cpu = strtol(cpu_id, &cpu_id_endp, 0);
@@ -226,9 +225,6 @@ perf_events_group_setup_cpu(struct perf_context *ctx, struct perf_group_cpu_cont
 
         if (group_fd == -1 && ctx->cgroup_fd > -1) { /* Set up IP sampling for group leader */
                 struct perf_event_attr attr = event->attr;
-                if (attr.sample_type) {
-                        fprintf(stderr, "ERROR: OVERRIDING SAMPLE TYPE %lld\n", attr.sample_type);
-                }
                 attr.sample_type = PERF_SAMPLE_CALLCHAIN;
                 attr.sample_period = 1;
                 attr.mmap = 1;
@@ -250,8 +246,7 @@ perf_events_group_setup_cpu(struct perf_context *ctx, struct perf_group_cpu_cont
                 }
 
                 /* Save buffer in cpu ctx */
-                cpu_ctx->buffer_info = buffer;
-                cpu_ctx->buffer = (char *)buffer + getpagesize();
+                cpu_ctx->buffer = buffer;
 
         } else { /* Start other events in group normally */
                 perf_fd = perf_event_open(&event->attr, ctx->cgroup_fd, (int) cpu, group_fd, perf_flags);
@@ -429,11 +424,10 @@ compute_perf_multiplexing_ratio(struct perf_read_format *report)
     return (!report->time_enabled) ? 1.0 : (double) report->time_running / (double) report->time_enabled;
 }
 
-// TESTING
 struct sample {
 	struct perf_event_header header;
-	unsigned long nr;
-	unsigned long ips[];
+	uint64_t nr;
+	uint64_t ips[];
 };
 
 void print_mmap_page(struct perf_event_mmap_page *header) {
@@ -479,21 +473,57 @@ void print_sample(struct sample *sample) {
 	print_header(&sample->header);
 	printf("struct sample\n");
 	printf("\tnr: %lu\n", sample->nr);
-	for (unsigned long i = 0; i < sample->nr; i++) {
+	for (uint64_t i = 0; i < sample->nr; i++) {
 		printf("\t\tips[%lu]: 0x%lx\n", i, sample->ips[i]);
 	}
 	printf("\n\n");
 }
 
-char *pack_ips(struct sample *sample) {
+char *pack_ips(struct perf_event_mmap_page *buffer) {
+	// Find sample location
+	uint64_t head = buffer->data_head;
+	__sync_synchronize();
+	uint64_t tail = buffer->data_tail;
+
+	// Check if there's a new sample to be read
+	if (tail == head) {
+		char *result = malloc(1);
+		*result = (char)0;
+		return result;
+	}
+
+	// Find most recent sample
+	struct perf_event_header *header = NULL;
+	while (tail < head) {
+		// Wrap around if we exceed the buffer length *
+		header = (struct perf_event_header *)((char *)buffer + buffer->data_offset + (tail % buffer->data_size));
+		//header = (struct perf_event_header *)((char *)buffer + buffer->data_offset + tail);
+		tail += header->size;
+	}
+	struct sample *sample = (struct sample *)header;
+	if (!sample) {
+		fprintf(stderr, "WARN: could not find last sample\n");
+		return NULL;
+	}
+
+	// Pack IPs into string
 	// String length = nr * 19 [16 (length of hex string) + 2 (0x) + 1 (;)] + 1 (null terminator)
-	char *result = (char *)malloc(sample->nr * 19 + 1);
+	char *result = calloc(1, sample->nr * 19 + 1);
 	if (!result)
 		return NULL;
 
 	char *ptr = result;
-	for (unsigned long i = 0; i < sample->nr; i++)
+	for (uint64_t i = 0; i < sample->nr; i++)
 		ptr += sprintf(ptr, "0x%lx;", sample->ips[i]);
+
+
+	// Update buffer info
+	// WARNING: data_head isn't intended to be writtent to, but
+	// I could not get the wrapping to work without crashing.
+	// (See the comment with *)
+	buffer->data_head = 0;
+	buffer->data_tail = 0;
+	__sync_synchronize();
 
 	return result;
 }
@@ -568,8 +598,8 @@ populate_payload(struct perf_context *ctx, struct payload *payload)
                 }
 
 		/* store callchain */
-		struct sample *sample = (struct sample *)cpu_ctx->buffer;
-		if (cpu_ctx->buffer_info && sample->nr) {
+		struct perf_event_mmap_page *buffer = (struct perf_event_mmap_page *)cpu_ctx->buffer;
+		if (buffer) {
 			zhashx_set_duplicator(cpu_data->events, NULL); // Disable the uint64ptrdup duplicator
 			char *ips = pack_ips(cpu_ctx->buffer);
 			zhashx_insert(cpu_data->events, "callchain", ips);

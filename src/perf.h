@@ -54,8 +54,7 @@ struct perf_group_cpu_context
     zlistx_t *perf_fds; /* int *fd */
     
     /* For sampling instruction pointers */
-    void *buffer_info; /* -> struct perf_event_mmap_page */
-    void *buffer;
+    void *buffer; /* -> struct perf_event_mmap_page */
 };
 
 /*
