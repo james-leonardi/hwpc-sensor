@@ -207,7 +207,7 @@ perf_events_group_setup_cpu(struct perf_context *ctx, struct perf_group_cpu_cont
     char *cpu_id_endp = NULL;
     long cpu;
     struct event_config *event = NULL;
-    unsigned int num_pages = 32;
+    size_t num_pages = 16;
 
     errno = 0;
     cpu = strtol(cpu_id, &cpu_id_endp, 0);
@@ -239,7 +239,7 @@ perf_events_group_setup_cpu(struct perf_context *ctx, struct perf_group_cpu_cont
                 }
 
                 /* Create mmap page for storing IPs */
-                void *buffer = mmap(NULL, num_pages * getpagesize() + 1, PROT_READ|PROT_WRITE, MAP_SHARED, perf_fd, 0);
+                void *buffer = mmap(NULL, (num_pages + 1) * getpagesize(), PROT_READ|PROT_WRITE, MAP_SHARED, perf_fd, 0);
                 if (buffer == MAP_FAILED) {
                         zsys_error("mmap<%s>: failed creating mmap buffer for group=%s cpu=%d event=%s errno=%d", ctx->target_name, group->name, (int) cpu, event->name, errno);
                         return -1;
@@ -487,9 +487,7 @@ char *pack_ips(struct perf_event_mmap_page *buffer) {
 
 	// Check if there's a new sample to be read
 	if (tail == head) {
-		char *result = malloc(1);
-		*result = (char)0;
-		return result;
+		return NULL;
 	}
 
 	// Find most recent sample
@@ -508,6 +506,12 @@ char *pack_ips(struct perf_event_mmap_page *buffer) {
 
 	// Pack IPs into string
 	// String length = nr * 19 [16 (length of hex string) + 2 (0x) + 1 (;)] + 1 (null terminator)
+	if (sample->nr > 32) {
+		buffer->data_head = 0;
+		buffer->data_tail = 0;
+		__sync_synchronize();
+		return NULL;
+	}
 	char *result = calloc(1, sample->nr * 19 + 1);
 	if (!result)
 		return NULL;
@@ -516,13 +520,8 @@ char *pack_ips(struct perf_event_mmap_page *buffer) {
 	for (uint64_t i = 0; i < sample->nr; i++)
 		ptr += sprintf(ptr, "0x%lx;", sample->ips[i]);
 
-
 	// Update buffer info
-	// WARNING: data_head isn't intended to be writtent to, but
-	// I could not get the wrapping to work without crashing.
-	// (See the comment with *)
-	buffer->data_head = 0;
-	buffer->data_tail = 0;
+	buffer->data_tail = tail;
 	__sync_synchronize();
 
 	return result;
@@ -602,7 +601,8 @@ populate_payload(struct perf_context *ctx, struct payload *payload)
 		if (buffer) {
 			zhashx_set_duplicator(cpu_data->events, NULL); // Disable the uint64ptrdup duplicator
 			char *ips = pack_ips(cpu_ctx->buffer);
-			zhashx_insert(cpu_data->events, "callchain", ips);
+			if (ips)
+				zhashx_insert(cpu_data->events, "callchain", ips);
 		}
 
                 zhashx_insert(pkg_data->cpus, cpu_id, cpu_data);
