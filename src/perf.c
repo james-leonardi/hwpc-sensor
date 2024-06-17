@@ -181,6 +181,7 @@ perf_context_create(struct perf_config *config, zsock_t *pipe, const char *targe
     ctx->cgroup_fd = -1; /* by default, system wide monitoring */
     ctx->groups_ctx = zhashx_new();
     zhashx_set_destructor(ctx->groups_ctx, (zhashx_destructor_fn *) perf_group_context_destroy);
+    ctx->dwfl = NULL;
 
     return ctx;
 }
@@ -265,6 +266,33 @@ perf_events_group_setup_cpu(struct perf_context *ctx, struct perf_group_cpu_cont
     return 0;
 }
 
+static Dwfl_Callbacks callbacks = {
+	.find_elf = dwfl_linux_proc_find_elf,
+	.find_debuginfo = dwfl_standard_find_debuginfo
+};
+
+Dwfl *init_dwfl(pid_t pid) {
+	Dwfl *dwfl = dwfl_begin(&callbacks);
+
+	if (!dwfl) {
+		fprintf(stderr, "dwfl_begin error: %s\n", dwfl_errmsg(-1));
+		return NULL;
+	}
+
+	if (dwfl_linux_proc_report(dwfl, pid)) {
+		fprintf(stderr, "dwfl_linux_proc_report error: %s\n", dwfl_errmsg(-1));
+		return NULL;
+	}
+
+	if (dwfl_report_end(dwfl, NULL, NULL) != 0) {
+		fprintf(stderr, "dwfl_report_end error: %s\n", dwfl_errmsg(-1));
+		dwfl_end(dwfl);
+		return NULL;
+	}
+
+	return dwfl;
+}
+
 static int
 perf_events_groups_initialize(struct perf_context *ctx)
 {
@@ -286,6 +314,9 @@ perf_events_groups_initialize(struct perf_context *ctx)
             zsys_error("perf<%s>: cannot open cgroup dir path=%s errno=%d", ctx->target_name, ctx->config->target->cgroup_path, errno);
             goto error;
         }
+
+	// get pid here
+	//ctx->dwfl = dwfl_init(PID);
     }
 
     for (events_group = zhashx_first(ctx->config->events_groups); events_group; events_group = zhashx_next(ctx->config->events_groups)) {
@@ -493,9 +524,7 @@ char *pack_ips(struct perf_event_mmap_page *buffer) {
 	// Find most recent sample
 	struct perf_event_header *header = NULL;
 	while (tail < head) {
-		// Wrap around if we exceed the buffer length *
 		header = (struct perf_event_header *)((char *)buffer + buffer->data_offset + (tail % buffer->data_size));
-		//header = (struct perf_event_header *)((char *)buffer + buffer->data_offset + tail);
 		tail += header->size;
 	}
 	struct sample *sample = (struct sample *)header;
@@ -505,13 +534,14 @@ char *pack_ips(struct perf_event_mmap_page *buffer) {
 	}
 
 	// Pack IPs into string
-	// String length = nr * 19 [16 (length of hex string) + 2 (0x) + 1 (;)] + 1 (null terminator)
+	// Temporary fix to crash. Revisit if time permits, but for now this works.
 	if (sample->nr > 32) {
 		buffer->data_head = 0;
 		buffer->data_tail = 0;
 		__sync_synchronize();
 		return NULL;
 	}
+	// String length = nr * 19 [16 (length of hex string) + 2 (0x) + 1 (;)] + 1 (null terminator)
 	char *result = calloc(1, sample->nr * 19 + 1);
 	if (!result)
 		return NULL;
