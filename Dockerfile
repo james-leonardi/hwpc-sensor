@@ -14,7 +14,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 ARG BUILD_TYPE=Debug
 ARG MONGODB_SUPPORT=ON
 RUN apt update && \
-    apt install -y build-essential git clang-tidy cmake pkg-config libczmq-dev libsystemd-dev uuid-dev && \
+    apt install -y build-essential git clang-tidy cmake pkg-config libczmq-dev libsystemd-dev uuid-dev libelf-dev libdw-dev && \
     echo "${MONGODB_SUPPORT}" |grep -iq "on" && apt install -y libmongoc-dev || true
 COPY --from=libpfm-builder /root/libpfm4*.deb /tmp/
 RUN dpkg -i /tmp/libpfm4_*.deb /tmp/libpfm4-dev_*.deb && \
@@ -23,7 +23,7 @@ COPY . /usr/src/hwpc-sensor
 RUN cd /usr/src/hwpc-sensor && \
     GIT_TAG=$(git describe --tags --dirty 2>/dev/null || echo "unknown") \
     GIT_REV=$(git rev-parse HEAD 2>/dev/null || echo "unknown") \
-    cmake -B build -DCMAKE_BUILD_TYPE="${BUILD_TYPE}" -DCMAKE_C_CLANG_TIDY="clang-tidy" -DWITH_MONGODB="${MONGODB_SUPPORT}" && \
+    cmake -B build -DCMAKE_BUILD_TYPE="${BUILD_TYPE}" -DCMAKE_C_CLANG_TIDY="clang-tidy" -DWITH_MONGODB="${MONGODB_SUPPORT}" -DCMAKE_EXE_LINKER_FLAGS="-ldw -lelf" && \
     cmake --build build --parallel $(getconf _NPROCESSORS_ONLN)
 
 # sensor runner image (only runtime depedencies):
@@ -34,7 +34,7 @@ ARG MONGODB_SUPPORT=ON
 ARG FILE_CAPABILITY=CAP_SYS_ADMIN
 RUN useradd -d /opt/powerapi -m powerapi && \
     apt update && \
-    apt install -y libczmq4 libcap2-bin && \
+    apt install -y libczmq4 libcap2-bin libdw1 libelf1 && \
     echo "${MONGODB_SUPPORT}" |grep -iq "on" && apt install -y libmongoc-1.0-0 || true && \
     echo "${BUILD_TYPE}" |grep -iq "debug" && apt install -y libasan6 libubsan1 || true && \
     rm -rf /var/lib/apt/lists/*

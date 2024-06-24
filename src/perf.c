@@ -225,36 +225,36 @@ perf_events_group_setup_cpu(struct perf_context *ctx, struct perf_group_cpu_cont
         errno = 0;
 
         if (group_fd == -1 && ctx->cgroup_fd > -1) { /* Set up IP sampling for group leader */
-                struct perf_event_attr attr = event->attr;
-                attr.sample_type = PERF_SAMPLE_CALLCHAIN;
-                attr.sample_period = 1;
-                attr.mmap = 1;
-		attr.cgroup = 1;
-		attr.exclude_kernel = 1;
-		attr.exclude_callchain_kernel = 1;
+            struct perf_event_attr attr = event->attr;
+            attr.sample_type = PERF_SAMPLE_CALLCHAIN;
+            attr.sample_period = 1;
+            attr.mmap = 1;
+            attr.cgroup = 1;
+            attr.exclude_kernel = 1;
+            attr.exclude_callchain_kernel = 1;
 
-                perf_fd = perf_event_open(&attr, ctx->cgroup_fd, (int) cpu, -1, perf_flags);
-                if (perf_fd < 1) {
-                    zsys_error("perf<%s>: failed opening perf event for group=%s cpu=%d event=%s groupfd=%d errno=%d", ctx->target_name, group->name, (int) cpu, event->name, group_fd, errno);
+            perf_fd = perf_event_open(&attr, ctx->cgroup_fd, (int) cpu, -1, perf_flags);
+            if (perf_fd < 1) {
+                zsys_error("perf<%s>: failed opening perf event for group=%s cpu=%d event=%s groupfd=%d errno=%d", ctx->target_name, group->name, (int) cpu, event->name, group_fd, errno);
+                return -1;
+            }
+
+            /* Create mmap page for storing IPs */
+            void *buffer = mmap(NULL, (num_pages + 1) * getpagesize(), PROT_READ|PROT_WRITE, MAP_SHARED, perf_fd, 0);
+            if (buffer == MAP_FAILED) {
+                    zsys_error("mmap<%s>: failed creating mmap buffer for group=%s cpu=%d event=%s errno=%d", ctx->target_name, group->name, (int) cpu, event->name, errno);
                     return -1;
-                }
+            }
 
-                /* Create mmap page for storing IPs */
-                void *buffer = mmap(NULL, (num_pages + 1) * getpagesize(), PROT_READ|PROT_WRITE, MAP_SHARED, perf_fd, 0);
-                if (buffer == MAP_FAILED) {
-                        zsys_error("mmap<%s>: failed creating mmap buffer for group=%s cpu=%d event=%s errno=%d", ctx->target_name, group->name, (int) cpu, event->name, errno);
-                        return -1;
-                }
-
-                /* Save buffer in cpu ctx */
-                cpu_ctx->buffer = buffer;
+            /* Save buffer in cpu ctx */
+            cpu_ctx->buffer = buffer;
 
         } else { /* Start other events in group normally */
-                perf_fd = perf_event_open(&event->attr, ctx->cgroup_fd, (int) cpu, group_fd, perf_flags);
-                if (perf_fd < 1) {
-                    zsys_error("perf<%s>: failed opening perf event for group=%s cpu=%d event=%s groupfd=%d errno=%d", ctx->target_name, group->name, (int) cpu, event->name, group_fd,  errno);
-                    return -1;
-                }
+            perf_fd = perf_event_open(&event->attr, ctx->cgroup_fd, (int) cpu, group_fd, perf_flags);
+            if (perf_fd < 1) {
+                zsys_error("perf<%s>: failed opening perf event for group=%s cpu=%d event=%s groupfd=%d errno=%d", ctx->target_name, group->name, (int) cpu, event->name, group_fd,  errno);
+                return -1;
+            }
         }
 	
 	if (group_fd == -1)
@@ -267,30 +267,85 @@ perf_events_group_setup_cpu(struct perf_context *ctx, struct perf_group_cpu_cont
 }
 
 static Dwfl_Callbacks callbacks = {
-	.find_elf = dwfl_linux_proc_find_elf,
-	.find_debuginfo = dwfl_standard_find_debuginfo
+    .find_elf = dwfl_linux_proc_find_elf,
+    .find_debuginfo = dwfl_standard_find_debuginfo
 };
 
-Dwfl *init_dwfl(pid_t pid) {
-	Dwfl *dwfl = dwfl_begin(&callbacks);
+Dwfl *init_dwfl(pid_t pid)
+{
+    Dwfl *dwfl = dwfl_begin(&callbacks);
 
-	if (!dwfl) {
-		fprintf(stderr, "dwfl_begin error: %s\n", dwfl_errmsg(-1));
-		return NULL;
-	}
+    if (!dwfl) {
+        fprintf(stderr, "dwfl_begin error: %s\n", dwfl_errmsg(-1));
+        return NULL;
+    }
 
-	if (dwfl_linux_proc_report(dwfl, pid)) {
-		fprintf(stderr, "dwfl_linux_proc_report error: %s\n", dwfl_errmsg(-1));
-		return NULL;
-	}
+    if (dwfl_linux_proc_report(dwfl, pid)) {
+        fprintf(stderr, "dwfl_linux_proc_report error: %s\n", dwfl_errmsg(-1));
+        return NULL;
+    }
 
-	if (dwfl_report_end(dwfl, NULL, NULL) != 0) {
-		fprintf(stderr, "dwfl_report_end error: %s\n", dwfl_errmsg(-1));
-		dwfl_end(dwfl);
-		return NULL;
-	}
+    if (dwfl_report_end(dwfl, NULL, NULL) != 0) {
+        fprintf(stderr, "dwfl_report_end error: %s\n", dwfl_errmsg(-1));
+        dwfl_end(dwfl);
+        return NULL;
+    }
 
-	return dwfl;
+    return dwfl;
+}
+
+pid_t get_pid_from_cgroup(char *cgroup_path)
+{
+    // Get file
+    char procs_path[strlen(cgroup_path) + 14];
+    strncpy(procs_path, cgroup_path, sizeof(procs_path));
+    strncat(procs_path, "/cgroup.procs", 14);
+
+    // Open file
+    FILE *procs_file = fopen(procs_path, "r");
+    if (!procs_file) {
+        fprintf(stderr, "Error opening file: %s\n", procs_path);
+        return -1;
+    }
+
+    // Extract pid from file
+    pid_t first_pid = -1;
+    char line[32];
+    int line_count = 0;
+    char *endptr;
+    while (fgets(line, sizeof(line), procs_file)) {
+        line_count++;
+        if (line_count == 1) {
+            errno = 0;
+            long pid_long = strtol(line, &endptr, 10);
+	    // Check for errors
+            if (errno != 0 || endptr == line || *endptr != '\n') {
+                fprintf(stderr, "Error: Invalid PID format in %s\n", procs_path);
+                fclose(procs_file);
+                return -1;
+            }
+	    // Check pid range
+            if (pid_long < 0 || pid_long > 32768) {
+                fprintf(stderr, "Error: PID out of range in %s\n", procs_path);
+                fclose(procs_file);
+                return -1;
+            }
+            first_pid = (pid_t)pid_long;
+        }
+        if (line_count > 1) {
+            fprintf(stderr, "WARNING: More than one PID found in %s\n", procs_path);
+            break;
+        }
+    }
+
+    // Ensure a pid was found
+    if (line_count == 0) {
+        fprintf(stderr, "Error: No PIDs found in %s\n", procs_path);
+        return -1;
+    }
+
+    fclose(procs_file);
+    return first_pid;
 }
 
 static int
@@ -306,17 +361,19 @@ perf_events_groups_initialize(struct perf_context *ctx)
     const char *cpu_id = NULL;
     struct perf_group_cpu_context *cpu_ctx = NULL;
 
-    if (ctx->config->target->cgroup_path) {
+    char *cgroup_path = ctx->config->target->cgroup_path;
+    if (cgroup_path) {
         perf_flags |= PERF_FLAG_PID_CGROUP;
         errno = 0;
-        ctx->cgroup_fd = open(ctx->config->target->cgroup_path, O_RDONLY); 
+        ctx->cgroup_fd = open(cgroup_path, O_RDONLY); 
         if (ctx->cgroup_fd < 1) {
-            zsys_error("perf<%s>: cannot open cgroup dir path=%s errno=%d", ctx->target_name, ctx->config->target->cgroup_path, errno);
+            zsys_error("perf<%s>: cannot open cgroup dir path=%s errno=%d", ctx->target_name, cgroup_path, errno);
             goto error;
         }
 
-	// get pid here
-	//ctx->dwfl = dwfl_init(PID);
+        pid_t pid = get_pid_from_cgroup(cgroup_path);
+        if (pid > -1)
+            ctx->dwfl = init_dwfl(pid);
     }
 
     for (events_group = zhashx_first(ctx->config->events_groups); events_group; events_group = zhashx_next(ctx->config->events_groups)) {
@@ -510,7 +567,7 @@ void print_sample(struct sample *sample) {
 	printf("\n\n");
 }
 
-char *pack_ips(struct perf_event_mmap_page *buffer) {
+char *pack_ips(struct perf_event_mmap_page *buffer, Dwfl *dwfl) {
 	// Find sample location
 	uint64_t head = buffer->data_head;
 	__sync_synchronize();
@@ -541,14 +598,28 @@ char *pack_ips(struct perf_event_mmap_page *buffer) {
 		__sync_synchronize();
 		return NULL;
 	}
-	// String length = nr * 19 [16 (length of hex string) + 2 (0x) + 1 (;)] + 1 (null terminator)
-	char *result = calloc(1, sample->nr * 19 + 1);
+	// IP string length = nr * 19 [16 (length of hex string) + 2 (0x) + 1 (;)] + 1 (null terminator)
+	char *result = calloc(1, dwfl ? 2048 : sample->nr * 19 + 1);
 	if (!result)
 		return NULL;
 
-	char *ptr = result;
-	for (uint64_t i = 0; i < sample->nr; i++)
-		ptr += sprintf(ptr, "0x%lx;", sample->ips[i]);
+    char *ptr = result;
+    if (dwfl) {
+        for (uint64_t i = 0; i < sample->nr; i++) {
+            Dwfl_Module *mod = dwfl_addrmodule(dwfl, sample->ips[i]);
+            const char *symbol = NULL;
+            if (mod)
+                symbol = dwfl_module_addrname(mod, sample->ips[i]);
+            if (symbol)
+                ptr += sprintf(ptr, "%s;", symbol);
+            else
+                ptr += sprintf(ptr, "0x%lx;", sample->ips[i]);
+        }
+
+    } else {
+        for (uint64_t i = 0; i < sample->nr; i++)
+            ptr += sprintf(ptr, "0x%lx;", sample->ips[i]);
+    }
 
 	// Update buffer info
 	buffer->data_tail = tail;
@@ -626,14 +697,14 @@ populate_payload(struct perf_context *ctx, struct payload *payload)
                     zhashx_insert(cpu_data->events, event->name, &perf_read_buffer->values[event_i].value);
                 }
 
-		/* store callchain */
-		struct perf_event_mmap_page *buffer = (struct perf_event_mmap_page *)cpu_ctx->buffer;
-		if (buffer) {
-			zhashx_set_duplicator(cpu_data->events, NULL); // Disable the uint64ptrdup duplicator
-			char *ips = pack_ips(cpu_ctx->buffer);
-			if (ips)
-				zhashx_insert(cpu_data->events, "callchain", ips);
-		}
+                /* store callchain */
+                struct perf_event_mmap_page *buffer = (struct perf_event_mmap_page *)cpu_ctx->buffer;
+                if (buffer) {
+                    zhashx_set_duplicator(cpu_data->events, NULL); // Disable the uint64ptrdup duplicator
+                    char *callchain = pack_ips(cpu_ctx->buffer, ctx->dwfl);
+                    if (callchain)
+                        zhashx_insert(cpu_data->events, "callchain", callchain);
+                }
 
                 zhashx_insert(pkg_data->cpus, cpu_id, cpu_data);
             }
