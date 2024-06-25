@@ -191,7 +191,7 @@ char *get_callchains(struct perf_event_mmap_page *buffer, Dwfl *dwfl)
 		// Do symbolization
 		char *symbols = get_symbols_from_sample(sample, dwfl);
 		if (symbols)
-			sprintf(callchains, symbols);
+			sprintf(callchains, "%s", symbols);
 		free(symbols);
 
 		if (used_malloc)
@@ -199,8 +199,6 @@ char *get_callchains(struct perf_event_mmap_page *buffer, Dwfl *dwfl)
 
 		buffer->data_tail += header.size;
 	}
-
-	sprintf(callchains, "\n");
 
 	// __sync_synchronize();
 	return callchains;
@@ -281,7 +279,7 @@ int main(int argc, char** argv) {
 		print_mmap_page(buffer_info);
 		char *callchains = get_callchains(buffer_info, dwfl);
 		if (callchains)
-			fprintf(stdout, callchains);
+			fprintf(stdout, "%s\n", callchains);
 		free(callchains);
 		usleep(report_sleep);
 	}
