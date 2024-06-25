@@ -178,11 +178,6 @@ char *get_callchains(struct perf_event_mmap_page *buffer, Dwfl *dwfl)
 		// Copy header to our stack
 		memcpy(&header, buffer_start + relative_loc, header_bytes_remaining); // Copy part at end of buffer.
 		memcpy((void*)&header + header_bytes_remaining, buffer_start, sizeof(struct perf_event_header) - header_bytes_remaining); // Copy part at start of buffer.
-		/*if (header_bytes_remaining < sizeof(struct perf_event_header)) {
-            memcpy(&header, buffer_start, sizeof(struct perf_event_header));
-        } else {
-            memcpy(&header, buffer_start + relative_loc, sizeof(struct perf_event_header));
-        }*/
 
 		// Find struct sample location
 		struct sample *sample = buffer_start + relative_loc;
@@ -195,17 +190,6 @@ char *get_callchains(struct perf_event_mmap_page *buffer, Dwfl *dwfl)
 			memcpy((void*)sample + bytes_remaining, buffer_start, header.size - bytes_remaining);
 		}
         
-        /*if (bytes_remaining < header.size) {
-            sample = malloc(header.size);
-            used_malloc = 1;
-            if (bytes_remaining < sizeof(struct perf_event_header)) {
-                memcpy(sample, buffer_start, header.size);
-            } else {
-                memcpy(sample, buffer_start + relative_loc, header.size);
-            }
-            memcpy((void*)sample + sizeof(struct perf_event_header), buffer_start, header.size - sizeof(struct perf_event_header));
-        }*/
-
 		// Do symbolization
 		char *symbols = get_symbols_from_sample(sample, dwfl);
 		if (symbols)
