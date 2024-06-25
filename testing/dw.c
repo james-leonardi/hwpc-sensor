@@ -113,6 +113,99 @@ void print_sample(struct sample *sample, Dwfl *dwfl) {
 	printf("\n\n");
 }
 
+char *get_symbols_from_sample(struct sample *sample, Dwfl *dwfl)
+{
+	if (sample->nr > 32) {
+		fprintf(stderr, "ERROR: sample at loc %p reported nr %lu\n", (void*)sample, sample->nr);
+		return NULL;
+	}
+
+	// If we can symbolize, set size to nr * 128.
+	// Else, size = nr * 19[2(0x) + 16(length of hex string) + 1(;)] + 2[1(|) + 1(\0)]
+	size_t length_assumption = dwfl ? 128 : 19;
+	char *callchain = calloc(1, sample->nr * length_assumption + 2);
+	if (!callchain) {
+		fprintf(stderr, "ERROR: ran out of memory\n");
+		return NULL;
+	}
+
+	// Perform symbolization
+	char *ptr = callchain;
+	if (dwfl) {
+		for (uint64_t i = 0; i < sample->nr; i++) {
+			Dwfl_Module *mod = dwfl_addrmodule(dwfl, sample->ips[i]);
+			const char *symbol = NULL;
+			if (mod)
+				symbol = dwfl_module_addrname(mod, sample->ips[i]);
+			if (symbol)
+				ptr += snprintf(ptr, length_assumption, "%s", symbol);
+			else
+				ptr += sprintf(ptr, "0x%lx", sample->ips[i]);
+			ptr += sprintf(ptr, ";");
+		}
+	} else {
+		for (uint64_t i = 0; i < sample->nr; i++)
+			ptr += sprintf(ptr, "0x%lx;", sample->ips[i]);
+	}
+	sprintf(ptr, "|");
+
+	// Return this callchain
+	return callchain;
+}
+
+char *get_callchains(struct perf_event_mmap_page *buffer, Dwfl *dwfl)
+{
+	// Find sample location
+	uint64_t head = buffer->data_head;
+	__sync_synchronize();
+
+	// Check if there's a new sample to be read
+	if (head == buffer->data_tail) {
+		return NULL;
+	}
+
+	// Get pointers to struct samples.
+	void *buffer_start = (void*)buffer + buffer->data_offset;
+	struct perf_event_header header = {0};
+	char *callchains = calloc(1, 20480); // buffer size for testing purposes
+	while (buffer->data_tail < head) {
+		// Get relative offset
+		uint64_t relative_loc = buffer->data_tail % buffer->data_size; // Number of bytes into buffer we are.
+		size_t bytes_remaining = buffer->data_size - relative_loc; // How many bytes till we hit the buffer wrap.
+		size_t header_bytes_remaining = bytes_remaining > sizeof(struct perf_event_header) ? sizeof(struct perf_event_header) : bytes_remaining;
+
+		// Copy header to our stack
+		memcpy(&header, buffer_start + relative_loc, header_bytes_remaining); // Copy part at end of buffer.
+		memcpy(&header, buffer_start, sizeof(struct perf_event_header) - header_bytes_remaining); // Copy part at start of buffer.
+		
+		// Find struct sample location
+		struct sample *sample = buffer_start + relative_loc;
+		int used_malloc = 0;
+		if (bytes_remaining < header.size) {
+			sample = malloc(header.size);
+			used_malloc = 1;
+			memcpy(sample, buffer_start + relative_loc, bytes_remaining);
+			memcpy(sample, buffer_start, header.size - bytes_remaining);
+		}
+
+		// Do symbolization
+		char *symbols = get_symbols_from_sample(sample, dwfl);
+		if (symbols)
+			sprintf(callchains, symbols);
+		free(symbols);
+
+		if (used_malloc)
+			free(sample);
+
+		buffer->data_tail += header.size;
+	}
+
+	sprintf(callchains, "\n");
+
+	// __sync_synchronize();
+	return callchains;
+}
+
 int main(int argc, char** argv) {
 	unsigned int samp_freq = 1000;
 	unsigned int report_sleep = 1000000;
@@ -166,7 +259,7 @@ int main(int argc, char** argv) {
 	}
 
 	// Set up memory map to collect results
-	void *buffer = mmap(NULL, 1+16*PAGE_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+	void *buffer = mmap(NULL, 2*PAGE_SIZE, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
 	if (buffer == MAP_FAILED) {
 		perror("mmap");
 		close(fd);
@@ -184,22 +277,13 @@ int main(int argc, char** argv) {
 	Dwfl *dwfl = init_dwfl(pid);
 
 	// Continuously read samples and print using print_sample()
-	void *data_head = buffer + PAGE_SIZE;
-	struct perf_event_header *hdr;
 	while (1) {
 		print_mmap_page(buffer_info);
-		print_sample(data_head, dwfl);
-
-		// Increment our read pointer by the amount of bytes read.
-		hdr = data_head;
-		data_head += hdr->size;
-		// Increment data_tail by the amount of bytes read.
-		buffer_info->data_tail += hdr->size;
-
-		// Sleep for 1 sec
+		char *callchains = get_callchains(buffer_info, dwfl);
+		if (callchains)
+			fprintf(stdout, callchains);
+		free(callchains);
 		usleep(report_sleep);
-
-		// This does not account for wrapping yet...
 	}
 
 	dwfl_end(dwfl);
