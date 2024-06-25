@@ -115,7 +115,7 @@ void print_sample(struct sample *sample, Dwfl *dwfl) {
 
 char *get_symbols_from_sample(struct sample *sample, Dwfl *dwfl)
 {
-	if (sample->nr > 32) {
+	if (sample->nr > 100) {
 		fprintf(stderr, "ERROR: sample at loc %p reported nr %lu\n", (void*)sample, sample->nr);
 		return NULL;
 	}
@@ -169,6 +169,7 @@ char *get_callchains(struct perf_event_mmap_page *buffer, Dwfl *dwfl)
 	struct perf_event_header header = {0};
 	char *callchains = calloc(1, 20480); // buffer size for testing purposes
 	while (buffer->data_tail < head) {
+        //printf("DIFF: %llu\n", head - buffer->data_tail);
 		// Get relative offset
 		uint64_t relative_loc = buffer->data_tail % buffer->data_size; // Number of bytes into buffer we are.
 		size_t bytes_remaining = buffer->data_size - relative_loc; // How many bytes till we hit the buffer wrap.
@@ -176,22 +177,39 @@ char *get_callchains(struct perf_event_mmap_page *buffer, Dwfl *dwfl)
 
 		// Copy header to our stack
 		memcpy(&header, buffer_start + relative_loc, header_bytes_remaining); // Copy part at end of buffer.
-		memcpy(&header, buffer_start, sizeof(struct perf_event_header) - header_bytes_remaining); // Copy part at start of buffer.
-		
+		memcpy((void*)&header + header_bytes_remaining, buffer_start, sizeof(struct perf_event_header) - header_bytes_remaining); // Copy part at start of buffer.
+		/*if (header_bytes_remaining < sizeof(struct perf_event_header)) {
+            memcpy(&header, buffer_start, sizeof(struct perf_event_header));
+        } else {
+            memcpy(&header, buffer_start + relative_loc, sizeof(struct perf_event_header));
+        }*/
+
 		// Find struct sample location
 		struct sample *sample = buffer_start + relative_loc;
+        //printf("RELATIVE: %lu PTR: %p\n", relative_loc, sample);
 		int used_malloc = 0;
 		if (bytes_remaining < header.size) {
 			sample = malloc(header.size);
 			used_malloc = 1;
 			memcpy(sample, buffer_start + relative_loc, bytes_remaining);
-			memcpy(sample, buffer_start, header.size - bytes_remaining);
+			memcpy((void*)sample + bytes_remaining, buffer_start, header.size - bytes_remaining);
 		}
+        
+        /*if (bytes_remaining < header.size) {
+            sample = malloc(header.size);
+            used_malloc = 1;
+            if (bytes_remaining < sizeof(struct perf_event_header)) {
+                memcpy(sample, buffer_start, header.size);
+            } else {
+                memcpy(sample, buffer_start + relative_loc, header.size);
+            }
+            memcpy((void*)sample + sizeof(struct perf_event_header), buffer_start, header.size - sizeof(struct perf_event_header));
+        }*/
 
 		// Do symbolization
 		char *symbols = get_symbols_from_sample(sample, dwfl);
 		if (symbols)
-			sprintf(callchains, "%s", symbols);
+			strcat(callchains, symbols);
 		free(symbols);
 
 		if (used_malloc)
