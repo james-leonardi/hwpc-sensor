@@ -31,8 +31,62 @@
 
 #include <stdlib.h>
 #include <stdint.h>
+#include <string.h>
 
 #include "util.h"
+
+struct strbuffer *
+strnew(size_t size)
+{
+    if (size == 0)
+        return NULL;
+
+    struct strbuffer *strbuffer = malloc(sizeof(struct strbuffer));
+    if (!strbuffer)
+        return NULL;
+
+    strbuffer->buffer = malloc(size);
+    if (!strbuffer->buffer) {
+        free(strbuffer);
+        return NULL;
+    }
+
+    strbuffer->buffsize = size;
+    strbuffer->currsize = 0;
+
+    return strbuffer;
+}
+
+void
+strapp(struct strbuffer *strbuffer, const char *to_append)
+{
+    size_t append_len = strlen(to_append);
+
+    size_t new_size = strbuffer->buffsize;
+    while (new_size <= strbuffer->currsize + append_len)
+        new_size *= 2;
+
+    // Resize if needed
+    if (new_size > strbuffer->buffsize) {
+        char *new_buff = realloc(strbuffer->buffer, new_size);
+        if (!new_buff)
+            return; // for error checking, verify strbuffer->currsize changed
+
+        strbuffer->buffer = new_buff;
+        strbuffer->buffsize = new_size;
+    }
+
+    strncpy(strbuffer->buffer + strbuffer->currsize, to_append, append_len+1);
+    strbuffer->currsize += append_len;
+}
+
+char *
+strfreewrap(struct strbuffer *strbuffer)
+{
+    char *buffer = strbuffer->buffer;
+    free(strbuffer);
+    return buffer;
+}
 
 int *
 intdup(int val)

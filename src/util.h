@@ -33,6 +33,32 @@
 #define UTIL_H
 
 #include <stdint.h>
+#include <stddef.h>
+
+/*
+ * strbuffer is an auto-resizing buffer for a string.
+ */
+struct strbuffer {
+    char *buffer;
+    size_t buffsize;
+    size_t currsize;
+};
+
+/*
+ * strnew creates a new strbuffer.
+ */
+struct strbuffer *strnew(size_t size);
+
+/*
+ * strapp appends the given string to the strbuffer, resizing if necessary.
+ */
+void strapp(struct strbuffer *strbuffer, const char *to_append);
+
+/*
+ * strfreewrap frees the wrapper memory and returns the internal allocated string.
+ * The passed pointer is no longer valid, and the returned pointer must eventually be freed by the caller.
+ */
+char *strfreewrap(struct strbuffer *strbuffer);
 
 /*
  * intdup returns a pointer to a new integer having the same value as val.
