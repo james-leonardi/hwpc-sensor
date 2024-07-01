@@ -228,7 +228,7 @@ perf_events_group_setup_cpu(struct perf_context *ctx, struct perf_group_cpu_cont
         if (group_fd == -1 && ctx->cgroup_fd > -1) { /* Set up IP sampling for group leader */
             struct perf_event_attr attr = event->attr;
             attr.sample_type = PERF_SAMPLE_CALLCHAIN;
-            attr.sample_freq = ctx->config.callchain_frequency;
+            attr.sample_freq = ctx->config->callchain_frequency;
             attr.freq = 1;
             attr.mmap = 1;
             attr.cgroup = 1;
