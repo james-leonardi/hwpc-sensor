@@ -48,7 +48,7 @@
 #include "report.h"
 
 struct perf_config *
-perf_config_create(struct hwinfo *hwinfo, zhashx_t *events_groups, struct target *target)
+perf_config_create(struct hwinfo *hwinfo, zhashx_t *events_groups, struct target *target, unsigned int callchain_frequency)
 {
     struct perf_config *config = malloc(sizeof(struct perf_config));
     
@@ -58,6 +58,7 @@ perf_config_create(struct hwinfo *hwinfo, zhashx_t *events_groups, struct target
     config->hwinfo = hwinfo_dup(hwinfo);
     config->events_groups = zhashx_dup(events_groups);
     config->target = target;
+    config->callchain_frequency = callchain_frequency;
 
     return config;
 }
@@ -227,7 +228,8 @@ perf_events_group_setup_cpu(struct perf_context *ctx, struct perf_group_cpu_cont
         if (group_fd == -1 && ctx->cgroup_fd > -1) { /* Set up IP sampling for group leader */
             struct perf_event_attr attr = event->attr;
             attr.sample_type = PERF_SAMPLE_CALLCHAIN;
-            attr.sample_period = 1;
+            attr.sample_freq = ctx->config.callchain_frequency;
+            attr.freq = 1;
             attr.mmap = 1;
             attr.cgroup = 1;
             attr.exclude_kernel = 1;

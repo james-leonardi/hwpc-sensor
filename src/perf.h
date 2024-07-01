@@ -47,7 +47,7 @@ struct perf_config
     struct hwinfo *hwinfo;
     zhashx_t *events_groups; /* char *group_name -> struct events_group *group_config */
     struct target *target;
-    unsigned int callchains_per_report;
+    unsigned int callchain_frequency;
 };
 
 /*
@@ -115,7 +115,7 @@ struct perf_read_format {
 /*
  * perf_config_create allocate and configure a perf configuration structure.
  */
-struct perf_config *perf_config_create(struct hwinfo *hwinfo, zhashx_t *events_groups, struct target *target, unsigned int callchains_per_report);
+struct perf_config *perf_config_create(struct hwinfo *hwinfo, zhashx_t *events_groups, struct target *target, unsigned int callchain_frequency);
 
 /*
  * perf_config_destroy free the resources allocated for the perf configuration structure.
