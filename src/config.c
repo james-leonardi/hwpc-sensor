@@ -54,6 +54,7 @@ config_create(void)
     /* sensor default config */
     config->sensor.verbose = 0;
     config->sensor.frequency = 1000;
+    config->sensor.callchains_per_report = 20;
     config->sensor.cgroup_basepath = DEFAULT_CGROUP_BASEPATH;
     config->sensor.name = NULL;
 
@@ -262,6 +263,10 @@ iter_on_root_config(bson_iter_t * iter, struct config *config)
 	config->sensor.frequency = bson_iter_int32(iter);
 	break;
       }
+      if(strcmp(key_name, "callchains_per_report") == 0){
+    config->sensor.callchains_per_report = bson_iter_int32(iter);
+    break;
+      }
       zsys_error("config: invalid integer value for %s", key_name);
       return -1;
     case BSON_TYPE_UTF8:
@@ -367,7 +372,7 @@ config_setup_from_cli(int argc, char **argv, struct config *config)
     zhashx_set_duplicator(config->events.containers, (zhashx_duplicator_fn *) events_group_dup);
     zhashx_set_destructor(config->events.containers, (zhashx_destructor_fn *) events_group_destroy);
 
-    while ((c = getopt(argc, argv, "vf:p:n:s:c:e:or:U:D:C:P:")) != -1) {
+    while ((c = getopt(argc, argv, "vf:F:p:n:s:c:e:or:U:D:C:P:")) != -1) {
 	switch (c) {
 	    case 'v':
 		config->sensor.verbose++;
@@ -378,6 +383,12 @@ config_setup_from_cli(int argc, char **argv, struct config *config)
 		    goto end;
 		}
 		break;
+        case 'F':
+        if (parse_frequency(optarg, &config->sensor.callchains_per_report)) {
+            zsys_error("config: the given callchains per report is invalid or out of range");
+            goto end;
+        }
+        break;
 	    case 'p':
 		config->sensor.cgroup_basepath = optarg;
 		break;

@@ -45,6 +45,7 @@ struct config_sensor
 {
     unsigned int verbose;
     unsigned int frequency;
+    unsigned int callchains_per_report;
     const char *cgroup_basepath;
     const char *name;
 };

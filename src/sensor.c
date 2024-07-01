@@ -76,7 +76,7 @@ setup_storage_module(struct config *config)
 }
 
 static void
-sync_cgroups_running_monitored(struct hwinfo *hwinfo, zhashx_t *container_events_groups, const char *cgroup_basepath, zhashx_t *container_monitoring_actors)
+sync_cgroups_running_monitored(struct hwinfo *hwinfo, zhashx_t *container_events_groups, const char *cgroup_basepath, zhashx_t *container_monitoring_actors, unsigned int callchains_per_report)
 {
     zhashx_t *running_targets = NULL; /* char *cgroup_path -> struct target *target */
     zactor_t *perf_monitor = NULL;
@@ -107,7 +107,7 @@ sync_cgroups_running_monitored(struct hwinfo *hwinfo, zhashx_t *container_events
     for (target = zhashx_first(running_targets); target; target = zhashx_next(running_targets)) {
         cgroup_path = zhashx_cursor(running_targets);
         if (!zhashx_lookup(container_monitoring_actors, cgroup_path)) {
-            monitor_config = perf_config_create(hwinfo, container_events_groups, target);
+            monitor_config = perf_config_create(hwinfo, container_events_groups, target, callchains_per_report);
             perf_monitor = zactor_new(perf_monitoring_actor, monitor_config);
             zhashx_insert(container_monitoring_actors, cgroup_path, perf_monitor);
         } else {
@@ -269,7 +269,7 @@ main(int argc, char **argv)
     /* start system monitoring actor only when needed */
     if (zhashx_size(config->events.system)) {
         system_target = target_create(TARGET_TYPE_ALL, NULL, NULL);
-        system_monitor_config = perf_config_create(hwinfo, config->events.system, system_target);
+        system_monitor_config = perf_config_create(hwinfo, config->events.system, system_target, config->sensor.callchains_per_report);
         system_perf_monitor = zactor_new(perf_monitoring_actor, system_monitor_config);
     }
 
@@ -279,7 +279,7 @@ main(int argc, char **argv)
     while (!zsys_interrupted) {
         /* monitor containers only when needed */
         if (zhashx_size(config->events.containers)) {
-            sync_cgroups_running_monitored(hwinfo, config->events.containers, config->sensor.cgroup_basepath, container_monitoring_actors);
+            sync_cgroups_running_monitored(hwinfo, config->events.containers, config->sensor.cgroup_basepath, container_monitoring_actors, config->sensor.callchains_per_report);
         }
 
         /* send clock tick to monitoring actors */
