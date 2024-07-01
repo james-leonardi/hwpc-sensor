@@ -567,65 +567,90 @@ void print_sample(struct sample *sample) {
 	printf("\n\n");
 }
 
-char *pack_ips(struct perf_event_mmap_page *buffer, Dwfl *dwfl) {
-	// Find sample location
-	uint64_t head = buffer->data_head;
-	__sync_synchronize();
-	uint64_t tail = buffer->data_tail;
+void append_symbols_from_sample(struct strbuffer *callchains, struct sample *sample, Dwfl *dwfl)
+{
+    if (sample->nr > 50) {
+        //fprintf(stderr, "ERROR: sample at loc %p reported nr %lu\n", (void*)sample, sample->nr);
+        return;
+    }
 
-	// Check if there's a new sample to be read
-	if (tail == head) {
-		return NULL;
-	}
+    // Create a stack buffer of size = 20[2(0x) + 16(length of hex string) + 1(;) + 1(|) + 1(\0)]
+    char ip_buffer[20];
 
-	// Find most recent sample
-	struct perf_event_header *header = NULL;
-	while (tail < head) {
-		header = (struct perf_event_header *)((char *)buffer + buffer->data_offset + (tail % buffer->data_size));
-		tail += header->size;
-	}
-	struct sample *sample = (struct sample *)header;
-	if (!sample) {
-		fprintf(stderr, "WARN: could not find last sample\n");
-		return NULL;
-	}
-
-	// Pack IPs into string
-	// Temporary fix to crash. Revisit if time permits, but for now this works.
-	if (sample->nr > 32) {
-		buffer->data_head = 0;
-		buffer->data_tail = 0;
-		__sync_synchronize();
-		return NULL;
-	}
-	// IP string length = nr * 19 [16 (length of hex string) + 2 (0x) + 1 (;)] + 1 (null terminator)
-	char *result = calloc(1, dwfl ? 2048 : sample->nr * 19 + 1);
-	if (!result)
-		return NULL;
-
-    char *ptr = result;
+    // Perform symbolization
     if (dwfl) {
         for (uint64_t i = 0; i < sample->nr; i++) {
             Dwfl_Module *mod = dwfl_addrmodule(dwfl, sample->ips[i]);
             const char *symbol = NULL;
             if (mod)
                 symbol = dwfl_module_addrname(mod, sample->ips[i]);
-            if (symbol)
-                ptr += sprintf(ptr, "%s;", symbol);
-            else
-                ptr += sprintf(ptr, "0x%lx;", sample->ips[i]);
+            if (symbol) {
+                strapp(callchains, symbol);
+                strapp(callchains, ";");
+            } else {
+                snprintf(ip_buffer, sizeof(ip_buffer), "0x%lx;", sample->ips[i]);
+                strapp(callchains, ip_buffer);
+            }
         }
-
     } else {
-        for (uint64_t i = 0; i < sample->nr; i++)
-            ptr += sprintf(ptr, "0x%lx;", sample->ips[i]);
+        for (uint64_t i = 0; i < sample->nr; i++) {
+            snprintf(ip_buffer, sizeof(ip_buffer), "0x%lx;", sample->ips[i]);
+            strapp(callchains, ip_buffer);
+        }
+    }
+    strapp(callchains, "|");
+}
+
+char *get_callchains(struct perf_event_mmap_page *buffer, Dwfl *dwfl)
+{
+    uint64_t head = buffer->data_head;
+    __sync_synchronize();
+
+    // Check if there's a new sample to be read
+    if (head == buffer->data_tail)
+        return NULL;
+
+    // Create helpers
+    char *buffer_start = (char*)buffer + buffer->data_offset;
+    struct strbuffer *callchains = strnew(1024);
+    if (!callchains) {
+        fprintf(stderr, "ERROR: Memory allocation failed in perf.c:get_callchains\n");
+        return NULL;
     }
 
-	// Update buffer info
-	buffer->data_tail = tail;
-	__sync_synchronize();
+    // Get pointers to struct samples.
+    struct perf_event_header header;
+    while (buffer->data_tail < head) {
+        // Get relative offset
+        uint64_t relative_loc = buffer->data_tail % buffer->data_size; // Number of bytes into buffer we are.
+        size_t bytes_remaining = buffer->data_size - relative_loc; // How many bytes till we hit the buffer wrap.
+        size_t header_bytes_remaining = bytes_remaining > sizeof(struct perf_event_header) ? sizeof(struct perf_event_header) : bytes_remaining;
 
-	return result;
+        // Copy header to our stack
+        memcpy(&header, buffer_start + relative_loc, header_bytes_remaining); // Copy part at end of buffer.
+        memcpy((char*)&header + header_bytes_remaining, buffer_start, sizeof(struct perf_event_header) - header_bytes_remaining); // Copy part at start of buffer.
+
+        // Find struct sample location
+        struct sample *sample = (struct sample*)(buffer_start + relative_loc);
+        int used_malloc = 0;
+        if (bytes_remaining < header.size) {
+            sample = malloc(header.size);
+            used_malloc = 1;
+            memcpy(sample, buffer_start + relative_loc, bytes_remaining);
+            memcpy((char*)sample + bytes_remaining, buffer_start, header.size - bytes_remaining);
+        }
+
+        // Do symbolization
+        append_symbols_from_sample(callchains, sample, dwfl);
+
+        if (used_malloc)
+            free(sample);
+
+        buffer->data_tail += header.size;
+    }
+
+    __sync_synchronize();
+    return strfreewrap(callchains);
 }
 
 static int
@@ -701,7 +726,7 @@ populate_payload(struct perf_context *ctx, struct payload *payload)
                 struct perf_event_mmap_page *buffer = (struct perf_event_mmap_page *)cpu_ctx->buffer;
                 if (buffer) {
                     zhashx_set_duplicator(cpu_data->events, NULL); // Disable the uint64ptrdup duplicator
-                    char *callchain = pack_ips(cpu_ctx->buffer, ctx->dwfl);
+                    char *callchain = get_callchains(cpu_ctx->buffer, ctx->dwfl);
                     if (callchain)
                         zhashx_insert(cpu_data->events, "callchain", callchain);
                 }
