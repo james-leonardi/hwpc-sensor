@@ -341,13 +341,14 @@ pid_t get_pid_from_cgroup(char *cgroup_path)
         }
     }
 
-    // Ensure a pid was found
+    fclose(procs_file);
+
+    /* Ensure a pid was found
     if (line_count == 0) {
         fprintf(stderr, "Error: No PIDs found in %s\n", procs_path);
         return -1;
-    }
+    } */
 
-    fclose(procs_file);
     return first_pid;
 }
 
@@ -373,10 +374,6 @@ perf_events_groups_initialize(struct perf_context *ctx)
             zsys_error("perf<%s>: cannot open cgroup dir path=%s errno=%d", ctx->target_name, cgroup_path, errno);
             goto error;
         }
-
-        pid_t pid = get_pid_from_cgroup(cgroup_path);
-        if (pid > -1)
-            ctx->dwfl = init_dwfl(pid);
     }
 
     for (events_group = zhashx_first(ctx->config->events_groups); events_group; events_group = zhashx_next(ctx->config->events_groups)) {
@@ -719,6 +716,13 @@ handle_ticker(struct perf_context *ctx)
     if (!payload) {
         zsys_error("perf<%s>: failed to allocate payload for timestamp=%lu", ctx->target_name, timestamp);
         return;
+    }
+
+    /* If we don't have a PID, try to get one */
+    if (!ctx->dwfl && ctx->config->target->cgroup_path) {
+        pid_t pid = get_pid_from_cgroup(ctx->config->target->cgroup_path);
+        if (pid > -1)
+            ctx->dwfl = init_dwfl(pid);
     }
 
     if (populate_payload(ctx, payload)) {
