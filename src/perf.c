@@ -328,7 +328,7 @@ pid_t get_pid_from_cgroup(char *cgroup_path)
                 return -1;
             }
 	    // Check pid range
-            if (pid_long < 0 || pid_long > 32768) {
+            if (pid_long < 0) {
                 fprintf(stderr, "Error: PID out of range in %s\n", procs_path);
                 fclose(procs_file);
                 return -1;
