@@ -45,7 +45,7 @@ strnew(size_t size)
     if (!strbuffer)
         return NULL;
 
-    strbuffer->buffer = malloc(size);
+    strbuffer->buffer = calloc(1, size);
     if (!strbuffer->buffer) {
         free(strbuffer);
         return NULL;
@@ -60,7 +60,7 @@ strnew(size_t size)
 void
 strapp(struct strbuffer *strbuffer, const char *to_append)
 {
-    size_t append_len = strlen(to_append);
+    size_t append_len = strlen(to_append) + 1;
 
     size_t new_size = strbuffer->buffsize;
     while (new_size <= strbuffer->currsize + append_len)
@@ -76,8 +76,8 @@ strapp(struct strbuffer *strbuffer, const char *to_append)
         strbuffer->buffsize = new_size;
     }
 
-    strncpy(strbuffer->buffer + strbuffer->currsize, to_append, append_len+1);
-    strbuffer->currsize += append_len;
+    strncpy(strbuffer->buffer + strbuffer->currsize, to_append, append_len);
+    strbuffer->currsize += append_len - 1;
 }
 
 char *

@@ -198,6 +198,7 @@ perf_context_destroy(struct perf_context *ctx)
     zsock_destroy(&ctx->reporting);
     close(ctx->cgroup_fd);
     zhashx_destroy(&ctx->groups_ctx);
+    dwfl_end(ctx->dwfl);
     free(ctx);
 }
 
@@ -234,7 +235,6 @@ perf_events_group_setup_cpu(struct perf_context *ctx, struct perf_group_cpu_cont
             attr.cgroup = 1;
             attr.exclude_kernel = 1;
             attr.exclude_callchain_kernel = 1;
-            //attr.precise_ip = 3;
 
             perf_fd = perf_event_open(&attr, ctx->cgroup_fd, (int) cpu, -1, perf_flags);
             if (perf_fd < 1) {
@@ -520,55 +520,6 @@ struct sample {
 	uint64_t nr;
 	uint64_t ips[];
 };
-
-void print_mmap_page(struct perf_event_mmap_page *header) {
-	printf("struct perf_event_mmap_page (%p)\n", (void*)header);
-	printf("\tversion: %u\n", header->version);
-	printf("\tcompat_version: %u\n", header->compat_version);
-	printf("\tlock: %u\n", header->lock);
-
-	printf("\tindex: %u\n", header->index);
-	printf("\toffset: %lli\n", header->offset);
-	printf("\ttime_enabled: %llu\n", header->time_enabled);
-	printf("\ttime_running: %llu\n", header->time_running);
-	printf("\tcapabilities: %llu\n", header->capabilities);
-	
-	printf("\tpmc_width: %hu\n", header->pmc_width);
-	printf("\ttime_shift: %hu\n", header->time_shift);
-	printf("\ttime_mult: %u\n", header->time_mult);
-	printf("\ttime_offset: %llu\n", header->time_offset);
-	
-	printf("\tdata_head: %llu\n", header->data_head);
-	printf("\tdata_tail: %llu\n", header->data_tail);
-	printf("\tdata_offset: %llu\n", header->data_offset);
-	printf("\tdata_size: %llu\n", header->data_size);
-
-	printf("\taux_head: %llu\n", header->aux_head);
-	printf("\taux_tail: %llu\n", header->aux_tail);
-	printf("\taux_offset: %llu\n", header->aux_offset);
-	printf("\taux_size: %llu\n", header->aux_size);
-	
-	printf("\n");
-}
-
-void print_header(struct perf_event_header *header) {
-	printf("struct perf_event_header\n");
-	printf("\ttype: %u\n", header->type);
-	printf("\tmisc: %hu\n", header->misc);
-	printf("\tsize: %hu\n", header->size);
-
-	printf("\n");
-}
-
-void print_sample(struct sample *sample) {
-	print_header(&sample->header);
-	printf("struct sample\n");
-	printf("\tnr: %lu\n", sample->nr);
-	for (uint64_t i = 0; i < sample->nr; i++) {
-		printf("\t\tips[%lu]: 0x%lx\n", i, sample->ips[i]);
-	}
-	printf("\n\n");
-}
 
 void append_symbols_from_sample(struct strbuffer *callchains, struct sample *sample, Dwfl *dwfl)
 {
