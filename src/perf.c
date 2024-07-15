@@ -234,6 +234,7 @@ perf_events_group_setup_cpu(struct perf_context *ctx, struct perf_group_cpu_cont
             attr.cgroup = 1;
             attr.exclude_kernel = 1;
             attr.exclude_callchain_kernel = 1;
+            attr.precise_ip = 3;
 
             perf_fd = perf_event_open(&attr, ctx->cgroup_fd, (int) cpu, -1, perf_flags);
             if (perf_fd < 1) {
