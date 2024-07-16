@@ -285,6 +285,7 @@ Dwfl *init_dwfl(pid_t pid)
 
     if (dwfl_linux_proc_report(dwfl, pid)) {
         fprintf(stderr, "dwfl_linux_proc_report error: %s\n", dwfl_errmsg(-1));
+        dwfl_end(dwfl);
         return NULL;
     }
 
